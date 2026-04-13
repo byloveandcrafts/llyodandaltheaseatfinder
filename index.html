@@ -1161,15 +1161,14 @@ body {
    Replace the values below with your own project
    from https://console.firebase.google.com
    ══════════════════════════════════════════════ */
-const firebaseConfig = {
-  apiKey: "AIzaSyAgk3G8o4crdTpmZgxhoECS8HoNTnf9TIw",
-  authDomain: "lloyd-althea-seatfinder.firebaseapp.com",
-  databaseURL: "https://lloyd-althea-seatfinder-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "lloyd-althea-seatfinder",
-  storageBucket: "lloyd-althea-seatfinder.firebasestorage.app",
-  messagingSenderId: "795193242624",
-  appId: "1:795193242624:web:a6925f1a3f6cfc6c8014e5",
-  measurementId: "G-2R37WHG7L3"
+const FIREBASE_CONFIG = {
+  apiKey:            "YOUR_API_KEY",
+  authDomain:        "YOUR_PROJECT_ID.firebaseapp.com",
+  databaseURL:       "https://YOUR_PROJECT_ID-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId:         "YOUR_PROJECT_ID",
+  storageBucket:     "YOUR_PROJECT_ID.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId:             "YOUR_APP_ID"
 };
 
 firebase.initializeApp(FIREBASE_CONFIG);
@@ -1204,6 +1203,11 @@ function loadGuests() {
     renderAdminList();
     updateGuestCount();
     sfSearch();
+    /* If Tables overlay is currently open, refresh it live */
+    const tablesOverlay = document.getElementById('tables-overlay');
+    if (tablesOverlay && !tablesOverlay.classList.contains('hidden')) {
+      renderTables();
+    }
   }, (err) => {
     console.error('Firebase error:', err);
     showSyncStatus('error');
@@ -1386,12 +1390,19 @@ function downloadQR() {
 }
 
 /* ── ADMIN ── */
-function openAdmin() { document.getElementById('admin-overlay').classList.remove('hidden'); renderAdminList(); updateGuestCount(); }
+function openAdmin() {
+  renderAdminList();
+  updateGuestCount();
+  document.getElementById('admin-overlay').classList.remove('hidden');
+}
 function closeAdmin() { document.getElementById('admin-overlay').classList.add('hidden'); }
 function adminBackdrop(e) { if (e.target === e.currentTarget) closeAdmin(); }
 
 /* ── TABLES ── */
-function openTables() { renderTables(); document.getElementById('tables-overlay').classList.remove('hidden'); }
+function openTables() {
+  renderTables();
+  document.getElementById('tables-overlay').classList.remove('hidden');
+}
 function closeTables() { document.getElementById('tables-overlay').classList.add('hidden'); }
 
 function renderTables() {
@@ -1423,10 +1434,15 @@ function addGuest() {
   const companions = c.value.split(',').map(s=>s.trim()).filter(Boolean);
   if (!name||!table) { if(!name) flashInvalid(n); if(!table) flashInvalid(t); return; }
   guests.push({name, table, companions});
-  saveGuests(); /* Firebase listener will auto-refresh all devices */
+  saveGuests();
+  renderAdminList(); updateGuestCount(); sfSearch();
   n.value=''; t.value=''; c.value=''; n.focus();
 }
-function deleteGuest(i) { guests.splice(i,1); saveGuests(); }
+function deleteGuest(i) {
+  guests.splice(i,1);
+  saveGuests();
+  renderAdminList(); updateGuestCount(); sfSearch();
+}
 function renderAdminList() {
   const list = document.getElementById('admin-list');
   if (!list) return;
@@ -1460,7 +1476,8 @@ function importData(e) {
       const data = JSON.parse(ev.target.result);
       if (!Array.isArray(data)) throw new Error();
       guests = data.filter(g=>g.name&&g.table);
-      saveGuests(); /* Firebase listener handles the UI refresh */
+      saveGuests();
+      renderAdminList(); updateGuestCount(); sfSearch();
     } catch(err) { alert('Import failed — please use a valid JSON file.'); }
     e.target.value='';
   };
@@ -1468,8 +1485,9 @@ function importData(e) {
 }
 function clearAll() {
   if (!confirm('Remove all guests from the list? This cannot be undone.')) return;
-  guests=[];
+  guests = [];
   GUESTS_REF.remove().catch(err => console.error('Clear error:', err));
+  renderAdminList(); updateGuestCount(); sfSearch();
 }
 function flashInvalid(el) {
   el.style.borderBottomColor='#d07880';
