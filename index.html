@@ -8,6 +8,9 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400;1,600&family=Cormorant+SC:wght@300;400;500&family=Josefin+Sans:wght@200;300;400;600&family=Playfair+Display:ital,wght@0,700;1,400&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <style>
 
 /* ─── TOKENS ─── */
@@ -918,6 +921,10 @@ body {
 .qr-footer-btns { display: flex; gap: 0.6rem; }
 .qr-footer-btns .abtn { flex: 1; text-align: center; }
 
+@keyframes pulse {
+  0%,100%{opacity:1} 50%{opacity:0.3}
+}
+
 /* ─── RESPONSIVE ─── */
 @media (max-width: 700px) {
   .page { grid-template-columns: 1fr; }
@@ -1149,23 +1156,100 @@ body {
 </div>
 
 <script>
-/* ── GUEST DATA ── */
-const STORAGE_KEY = 'la_seatfinder_v1';
-let guests = [];
+/* ══════════════════════════════════════════════
+   FIREBASE CONFIG
+   Replace the values below with your own project
+   from https://console.firebase.google.com
+   ══════════════════════════════════════════════ */
+const firebaseConfig = {
+  apiKey: "AIzaSyAgk3G8o4crdTpmZgxhoECS8HoNTnf9TIw",
+  authDomain: "lloyd-althea-seatfinder.firebaseapp.com",
+  databaseURL: "https://lloyd-althea-seatfinder-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "lloyd-althea-seatfinder",
+  storageBucket: "lloyd-althea-seatfinder.firebasestorage.app",
+  messagingSenderId: "795193242624",
+  appId: "1:795193242624:web:a6925f1a3f6cfc6c8014e5",
+  measurementId: "G-2R37WHG7L3"
+};
 
-function loadGuests() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    guests = raw ? JSON.parse(raw) : getDefaultGuests();
-    if (!raw) saveGuests();
-  } catch(e) { guests = getDefaultGuests(); }
-}
-function saveGuests() { localStorage.setItem(STORAGE_KEY, JSON.stringify(guests)); }
+firebase.initializeApp(FIREBASE_CONFIG);
+const db = firebase.database();
+const GUESTS_REF = db.ref('lloyd_althea/guests');
+
+/* ── GUEST DATA ── */
+let guests = [];
+let _fbReady = false;
+
 function getDefaultGuests() {
   return [
     { name: "Lloyd", table: "Bridal Table", companions: ["Althea", "Best Man", "Maid of Honor"] },
     { name: "Althea", table: "Bridal Table", companions: ["Lloyd", "Best Man", "Maid of Honor"] },
   ];
+}
+
+/* Real-time listener — fires on load AND whenever data changes on any device */
+function loadGuests() {
+  showSyncStatus('connecting');
+  GUESTS_REF.on('value', (snap) => {
+    const data = snap.val();
+    if (data) {
+      guests = Object.values(data);
+    } else {
+      /* First time — seed with defaults */
+      guests = getDefaultGuests();
+      _pushAllGuests();
+    }
+    _fbReady = true;
+    hideSyncStatus();
+    renderAdminList();
+    updateGuestCount();
+    sfSearch();
+  }, (err) => {
+    console.error('Firebase error:', err);
+    showSyncStatus('error');
+  });
+}
+
+function saveGuests() {
+  /* Overwrite entire list on Firebase */
+  _pushAllGuests();
+}
+
+function _pushAllGuests() {
+  const obj = {};
+  guests.forEach((g, i) => { obj[i] = g; });
+  GUESTS_REF.set(obj).catch(err => {
+    console.error('Save error:', err);
+    showSyncStatus('error');
+  });
+}
+
+/* ── SYNC STATUS INDICATOR ── */
+function showSyncStatus(state) {
+  let el = document.getElementById('sync-status');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'sync-status';
+    el.style.cssText = `
+      position:fixed;bottom:1.2rem;right:1.2rem;z-index:9999;
+      font-family:'Josefin Sans',sans-serif;font-size:0.62rem;letter-spacing:0.1em;
+      text-transform:uppercase;padding:0.45rem 0.9rem;border-radius:2px;
+      display:flex;align-items:center;gap:0.5rem;transition:opacity 0.4s;
+    `;
+    document.body.appendChild(el);
+  }
+  if (state === 'connecting') {
+    el.style.background = '#f5e9c8'; el.style.color = '#7a5a20'; el.style.border = '1px solid #c9a84c';
+    el.innerHTML = `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#c9a84c;animation:pulse 1s infinite"></span> Connecting…`;
+  } else if (state === 'error') {
+    el.style.background = '#fff0f0'; el.style.color = '#b04040'; el.style.border = '1px solid #d07880';
+    el.innerHTML = `⚠ Sync error — check connection`;
+  }
+  el.style.opacity = '1';
+}
+function hideSyncStatus() {
+  const el = document.getElementById('sync-status');
+  if (el) { el.style.opacity = '0'; setTimeout(() => el.remove(), 500); }
 }
 
 /* ── SEARCH ── */
@@ -1339,10 +1423,10 @@ function addGuest() {
   const companions = c.value.split(',').map(s=>s.trim()).filter(Boolean);
   if (!name||!table) { if(!name) flashInvalid(n); if(!table) flashInvalid(t); return; }
   guests.push({name, table, companions});
-  saveGuests(); renderAdminList(); updateGuestCount(); sfSearch();
+  saveGuests(); /* Firebase listener will auto-refresh all devices */
   n.value=''; t.value=''; c.value=''; n.focus();
 }
-function deleteGuest(i) { guests.splice(i,1); saveGuests(); renderAdminList(); updateGuestCount(); sfSearch(); }
+function deleteGuest(i) { guests.splice(i,1); saveGuests(); }
 function renderAdminList() {
   const list = document.getElementById('admin-list');
   if (!list) return;
@@ -1376,7 +1460,7 @@ function importData(e) {
       const data = JSON.parse(ev.target.result);
       if (!Array.isArray(data)) throw new Error();
       guests = data.filter(g=>g.name&&g.table);
-      saveGuests(); renderAdminList(); updateGuestCount(); sfSearch();
+      saveGuests(); /* Firebase listener handles the UI refresh */
     } catch(err) { alert('Import failed — please use a valid JSON file.'); }
     e.target.value='';
   };
@@ -1384,7 +1468,8 @@ function importData(e) {
 }
 function clearAll() {
   if (!confirm('Remove all guests from the list? This cannot be undone.')) return;
-  guests=[]; saveGuests(); renderAdminList(); updateGuestCount(); sfSearch();
+  guests=[];
+  GUESTS_REF.remove().catch(err => console.error('Clear error:', err));
 }
 function flashInvalid(el) {
   el.style.borderBottomColor='#d07880';
