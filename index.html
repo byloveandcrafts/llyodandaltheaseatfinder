@@ -1171,13 +1171,23 @@ const FIREBASE_CONFIG = {
   appId:             "YOUR_APP_ID"
 };
 
-firebase.initializeApp(FIREBASE_CONFIG);
-const db = firebase.database();
-const GUESTS_REF = db.ref('lloyd_althea/guests');
-
 /* ── GUEST DATA ── */
 let guests = [];
-let _fbReady = false;
+const STORAGE_KEY = 'la_seatfinder_v1';
+
+/* Detect if Firebase config has been filled in */
+const FB_CONFIGURED = FIREBASE_CONFIG.apiKey !== "YOUR_API_KEY";
+
+let GUESTS_REF = null;
+
+if (FB_CONFIGURED) {
+  try {
+    firebase.initializeApp(FIREBASE_CONFIG);
+    GUESTS_REF = firebase.database().ref('lloyd_althea/guests');
+  } catch(e) {
+    console.warn('Firebase init failed, falling back to localStorage:', e);
+  }
+}
 
 function getDefaultGuests() {
   return [
@@ -1186,46 +1196,78 @@ function getDefaultGuests() {
   ];
 }
 
-/* Real-time listener — fires on load AND whenever data changes on any device */
+/* ── LOAD: Firebase (real-time) or localStorage (offline) ── */
 function loadGuests() {
-  showSyncStatus('connecting');
-  GUESTS_REF.on('value', (snap) => {
-    const data = snap.val();
-    if (data) {
-      guests = Object.values(data);
-    } else {
-      /* First time — seed with defaults */
-      guests = getDefaultGuests();
-      _pushAllGuests();
-    }
-    _fbReady = true;
-    hideSyncStatus();
-    renderAdminList();
-    updateGuestCount();
-    sfSearch();
-    /* If Tables overlay is currently open, refresh it live */
-    const tablesOverlay = document.getElementById('tables-overlay');
-    if (tablesOverlay && !tablesOverlay.classList.contains('hidden')) {
-      renderTables();
-    }
-  }, (err) => {
-    console.error('Firebase error:', err);
-    showSyncStatus('error');
-  });
+  if (GUESTS_REF) {
+    showSyncStatus('connecting');
+    GUESTS_REF.on('value', (snap) => {
+      const data = snap.val();
+      if (data) {
+        /* Firebase returns an object keyed by index — convert to array */
+        guests = Array.isArray(data) ? data : Object.values(data);
+        /* Filter out any nulls that can appear after deletions */
+        guests = guests.filter(g => g && g.name && g.table);
+      } else {
+        guests = getDefaultGuests();
+        _fbPush();
+      }
+      hideSyncStatus();
+      _refreshAll();
+    }, (err) => {
+      console.error('Firebase error:', err);
+      showSyncStatus('error');
+      /* Fall back to localStorage on Firebase error */
+      _loadFromLocalStorage();
+      _refreshAll();
+    });
+  } else {
+    _loadFromLocalStorage();
+    _refreshAll();
+  }
+}
+
+function _loadFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    guests = raw ? JSON.parse(raw) : getDefaultGuests();
+    if (!raw) _saveToLocalStorage();
+  } catch(e) {
+    guests = getDefaultGuests();
+  }
+}
+
+function _saveToLocalStorage() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(guests)); } catch(e) {}
 }
 
 function saveGuests() {
-  /* Overwrite entire list on Firebase */
-  _pushAllGuests();
+  if (GUESTS_REF) {
+    _fbPush();
+  } else {
+    _saveToLocalStorage();
+  }
 }
 
-function _pushAllGuests() {
+function _fbPush() {
+  /* Re-index from 0 to avoid sparse keys after deletions */
   const obj = {};
   guests.forEach((g, i) => { obj[i] = g; });
   GUESTS_REF.set(obj).catch(err => {
-    console.error('Save error:', err);
+    console.error('Firebase save error:', err);
     showSyncStatus('error');
   });
+}
+
+/* ── REFRESH ALL UI ── */
+function _refreshAll() {
+  renderAdminList();
+  updateGuestCount();
+  /* Re-run search only if there's an active query */
+  const q = document.getElementById('sf-search');
+  if (q) sfSearch();
+  /* If Tables overlay is open, refresh it too */
+  const tablesOverlay = document.getElementById('tables-overlay');
+  if (tablesOverlay && !tablesOverlay.classList.contains('hidden')) renderTables();
 }
 
 /* ── SYNC STATUS INDICATOR ── */
@@ -1234,26 +1276,26 @@ function showSyncStatus(state) {
   if (!el) {
     el = document.createElement('div');
     el.id = 'sync-status';
-    el.style.cssText = `
-      position:fixed;bottom:1.2rem;right:1.2rem;z-index:9999;
-      font-family:'Josefin Sans',sans-serif;font-size:0.62rem;letter-spacing:0.1em;
-      text-transform:uppercase;padding:0.45rem 0.9rem;border-radius:2px;
-      display:flex;align-items:center;gap:0.5rem;transition:opacity 0.4s;
-    `;
+    el.style.cssText = [
+      'position:fixed','bottom:1.2rem','right:1.2rem','z-index:9999',
+      "font-family:'Josefin Sans',sans-serif",'font-size:0.62rem','letter-spacing:0.1em',
+      'text-transform:uppercase','padding:0.45rem 0.9rem','border-radius:2px',
+      'display:flex','align-items:center','gap:0.5rem','transition:opacity 0.4s'
+    ].join(';');
     document.body.appendChild(el);
   }
   if (state === 'connecting') {
     el.style.background = '#f5e9c8'; el.style.color = '#7a5a20'; el.style.border = '1px solid #c9a84c';
-    el.innerHTML = `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#c9a84c;animation:pulse 1s infinite"></span> Connecting…`;
+    el.innerHTML = '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#c9a84c;animation:pulse 1s infinite"></span> Syncing…';
   } else if (state === 'error') {
     el.style.background = '#fff0f0'; el.style.color = '#b04040'; el.style.border = '1px solid #d07880';
-    el.innerHTML = `⚠ Sync error — check connection`;
+    el.innerHTML = '⚠ Sync error — check connection';
   }
   el.style.opacity = '1';
 }
 function hideSyncStatus() {
   const el = document.getElementById('sync-status');
-  if (el) { el.style.opacity = '0'; setTimeout(() => el.remove(), 500); }
+  if (el) { el.style.opacity = '0'; setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 500); }
 }
 
 /* ── SEARCH ── */
@@ -1408,20 +1450,27 @@ function closeTables() { document.getElementById('tables-overlay').classList.add
 function renderTables() {
   const grid = document.getElementById('tables-grid');
   if (!grid) return;
-  if (!guests.length) { grid.innerHTML = `<div class="tables-empty">No guests have been added yet.</div>`; return; }
+  if (!guests.length) {
+    grid.innerHTML = '<div class="tables-empty">No guests have been added yet.</div>';
+    return;
+  }
   const map = {};
-  guests.forEach(g => { const k = g.table||'Unassigned'; if (!map[k]) map[k]=[]; map[k].push(g.name); });
-  const sorted = Object.keys(map).sort((a,b) => a.localeCompare(b, undefined, {numeric:true}));
+  guests.forEach(g => {
+    const k = g.table || 'Unassigned';
+    if (!map[k]) map[k] = [];
+    map[k].push(g.name);
+  });
+  const sorted = Object.keys(map).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   grid.innerHTML = sorted.map((table, i) => {
     const names = map[table];
-    const rows = names.map(n => `<div class="table-guest-row"><span class="table-guest-name">${esc(n)}</span></div>`).join('');
-    return `<div class="table-card" style="animation-delay:${i*50}ms">
-      <div class="table-card-header">
-        <span class="table-card-name">${esc(table)}</span>
-        <span class="table-card-count">${names.length} guest${names.length!==1?'s':''}</span>
-      </div>
-      <div class="table-card-guests">${rows}</div>
-    </div>`;
+    const rows = names.map(n => '<div class="table-guest-row"><span class="table-guest-name">' + esc(n) + '</span></div>').join('');
+    return '<div class="table-card" style="animation-delay:' + (i * 50) + 'ms">' +
+      '<div class="table-card-header">' +
+        '<span class="table-card-name">' + esc(table) + '</span>' +
+        '<span class="table-card-count">' + names.length + ' guest' + (names.length !== 1 ? 's' : '') + '</span>' +
+      '</div>' +
+      '<div class="table-card-guests">' + rows + '</div>' +
+    '</div>';
   }).join('');
 }
 
@@ -1432,67 +1481,82 @@ function addGuest() {
   const c = document.getElementById('admin-companions');
   const name = n.value.trim(), table = t.value.trim();
   const companions = c.value.split(',').map(s=>s.trim()).filter(Boolean);
-  if (!name||!table) { if(!name) flashInvalid(n); if(!table) flashInvalid(t); return; }
-  guests.push({name, table, companions});
+  if (!name || !table) { if (!name) flashInvalid(n); if (!table) flashInvalid(t); return; }
+  guests.push({ name, table, companions });
   saveGuests();
   renderAdminList(); updateGuestCount(); sfSearch();
-  n.value=''; t.value=''; c.value=''; n.focus();
+  n.value = ''; t.value = ''; c.value = ''; n.focus();
 }
+
 function deleteGuest(i) {
-  guests.splice(i,1);
+  guests.splice(i, 1);
   saveGuests();
   renderAdminList(); updateGuestCount(); sfSearch();
 }
+
 function renderAdminList() {
   const list = document.getElementById('admin-list');
   if (!list) return;
   if (!guests.length) {
-    list.innerHTML = `<p style="font-size:0.9rem;color:var(--text-faint);padding:0.5rem 0;font-style:italic;font-family:'Cormorant Garamond',serif;">No guests have been added to the list yet.</p>`;
+    list.innerHTML = '<p style="font-size:0.9rem;color:var(--text-faint);padding:0.5rem 0;font-style:italic;font-family:\'Cormorant Garamond\',serif;">No guests have been added to the list yet.</p>';
     return;
   }
-  list.innerHTML = guests.map((g,i)=>`
+  list.innerHTML = guests.map((g, i) => `
     <div class="admin-row">
       <div style="flex:1;min-width:0">
         <div class="admin-row-name">${esc(g.name)}</div>
-        <div class="admin-row-meta">${esc(g.table)}${g.companions?.length?' · '+g.companions.length+' companion'+(g.companions.length>1?'s':''):''}</div>
+        <div class="admin-row-meta">${esc(g.table)}${g.companions && g.companions.length ? ' · ' + g.companions.length + ' companion' + (g.companions.length > 1 ? 's' : '') : ''}</div>
       </div>
       <button class="btn-del" onclick="deleteGuest(${i})">✕</button>
     </div>`).join('');
 }
+
 function updateGuestCount() {
   const el = document.getElementById('guest-count');
-  if (el) el.textContent = `(${guests.length})`;
+  if (el) el.textContent = '(' + guests.length + ')';
 }
+
 function exportData() {
-  const blob = new Blob([JSON.stringify(guests,null,2)],{type:'application/json'});
-  const a = Object.assign(document.createElement('a'),{href:URL.createObjectURL(blob),download:'lloyd-althea-guests.json'});
-  a.click(); URL.revokeObjectURL(a.href);
+  const blob = new Blob([JSON.stringify(guests, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'lloyd-althea-guests.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
+
 function importData(e) {
   const file = e.target.files[0]; if (!file) return;
   const reader = new FileReader();
   reader.onload = (ev) => {
     try {
       const data = JSON.parse(ev.target.result);
-      if (!Array.isArray(data)) throw new Error();
-      guests = data.filter(g=>g.name&&g.table);
+      if (!Array.isArray(data)) throw new Error('Not an array');
+      guests = data.filter(g => g.name && g.table);
       saveGuests();
       renderAdminList(); updateGuestCount(); sfSearch();
     } catch(err) { alert('Import failed — please use a valid JSON file.'); }
-    e.target.value='';
+    e.target.value = '';
   };
   reader.readAsText(file);
 }
+
 function clearAll() {
   if (!confirm('Remove all guests from the list? This cannot be undone.')) return;
   guests = [];
-  GUESTS_REF.remove().catch(err => console.error('Clear error:', err));
+  if (GUESTS_REF) {
+    GUESTS_REF.remove().catch(err => console.error('Clear error:', err));
+  } else {
+    _saveToLocalStorage();
+  }
   renderAdminList(); updateGuestCount(); sfSearch();
 }
+
 function flashInvalid(el) {
-  el.style.borderBottomColor='#d07880';
-  setTimeout(()=>(el.style.borderBottomColor=''),1200);
+  el.style.borderBottomColor = '#d07880';
+  setTimeout(() => (el.style.borderBottomColor = ''), 1200);
 }
+
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
@@ -1500,24 +1564,32 @@ function esc(s) {
 /* ── INIT ── */
 document.addEventListener('DOMContentLoaded', () => {
   loadGuests();
-  renderAdminList();
-  updateGuestCount();
 
   const params = new URLSearchParams(window.location.search);
   const pre = params.get('name') || params.get('n');
   if (pre) {
     const input = document.getElementById('sf-search');
-    input.value = decodeURIComponent(pre);
-    document.getElementById('sf-clear').classList.add('visible');
-    sfSearch();
+    if (input) {
+      input.value = decodeURIComponent(pre);
+      const clr = document.getElementById('sf-clear');
+      if (clr) clr.classList.add('visible');
+      /* Delay search until Firebase has loaded data */
+      setTimeout(() => sfSearch(), 1500);
+    }
   }
 
-  document.getElementById('tables-overlay').addEventListener('click', (e) => {
-    if (e.target === e.currentTarget) closeTables();
-  });
+  const tablesOverlay = document.getElementById('tables-overlay');
+  if (tablesOverlay) {
+    tablesOverlay.addEventListener('click', (e) => {
+      if (e.target === tablesOverlay) closeTables();
+    });
+  }
 
   setTimeout(() => {
-    if (window.innerWidth > 700) document.getElementById('sf-search').focus();
+    if (window.innerWidth > 700) {
+      const inp = document.getElementById('sf-search');
+      if (inp) inp.focus();
+    }
   }, 400);
 });
 </script>
